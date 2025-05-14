@@ -5,9 +5,7 @@ import json
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from bs4 import BeautifulSoup
 
 # === CONFIG ===
 load_dotenv()
@@ -21,12 +19,7 @@ if not GEMINI_API_KEY:
     raise RuntimeError("GEMINI_API_KEY environment variable not set")
 
 app = Flask(__name__)
-CORS(app, resources={
-    r"/api/*": {
-        "origins": "https://zak-beta.vercel.app"
-    }
-})
-
+CORS(app, resources={r"/api/*": {"origins": "https://zak-beta.vercel.app"}})
 
 # === Helper Functions ===
 def is_valid_text(text):
@@ -46,114 +39,111 @@ def get_links_from_serpapi(query, api_key, max_results=5):
         resp = requests.get("https://serpapi.com/search.json", params=params, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-        links = []
-        org = data.get("organic_results")
-        if not org:
-            return []
-        for result in org[:max_results]:
-            link = result.get("link")
-            if link:
-                links.append(link)
-        return links
+        org = data.get("organic_results", [])
+        return [r.get("link") for r in org[:max_results] if r.get("link")]
     except Exception:
         return []
 
-def scrape_links(links, load_timeout=5):
-    options = Options()
-    options.add_argument("--headless=new")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--window-size=1920,1080")
-    driver = webdriver.Chrome(options=options)
-    driver.set_page_load_timeout(load_timeout)
-
+def scrape_links(links, timeout=10):
     extracted = ""
+    headers = {"User-Agent": "Mozilla/5.0"}
     for url in links:
         try:
-            driver.get(url)
-        except (TimeoutException, WebDriverException):
-            continue
-        time.sleep(3)
-
-        try:
-            elems = driver.find_elements("xpath", "//h1 | //h2 | //h3 | //p | //a")
-            for el in elems:
-                tag_name = el.tag_name.lower()
-                text = el.text.strip()
-
-                if tag_name == "a":
-                    href = el.get_attribute("href")
-                    if text and href:
-                        extracted += f"[{text}]({href})\n"  # Markdown-style link
-                elif is_valid_text(text):
-                    extracted += text + "\n"
-        except Exception as e:
-            print(f"[ERROR] Failed while extracting elements: {e}")
-
-
-        try:
-            tables = driver.find_elements("tag name", "table")
-            for table in tables:
-                rows = table.find_elements("tag name", "tr")
-                for row in rows:
-                    cells = row.find_elements("tag name", "th") + row.find_elements("tag name", "td")
-                    texts = [cell.text.strip() for cell in cells]
-                    if any(texts):
-                        line = "\t".join(texts)
-                        extracted += line + "\n"
+            resp = requests.get(url, headers=headers, timeout=timeout)
+            resp.raise_for_status()
         except Exception:
-            pass
+            continue
 
-    driver.quit()
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # extract headings & paragraphs
+        for tag in soup.select("h1, h2, h3, p"):
+            text = tag.get_text(strip=True)
+            if is_valid_text(text):
+                extracted += text + "\n"
+
+        # extract anchors as markdown links
+        for a in soup.find_all("a", href=True):
+            text = a.get_text(strip=True) or a["href"]
+            href = a["href"]
+            if href.startswith("http"):
+                extracted += f"[{text}]({href})\n"
+
+        # extract table rows
+        for table in soup.find_all("table"):
+            for row in table.find_all("tr"):
+                cells = row.find_all(["th", "td"])
+                texts = [cell.get_text(strip=True) for cell in cells]
+                if any(texts):
+                    # join cell texts with tabs
+                    extracted += "\t".join(texts) + "\n"
+
     return extracted
 
+
 def query_gemini(user_question, scraped_text, api_key):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/"
+        f"models/gemini-2.0-flash:generateContent?key={api_key}"
+    )
     headers = {"Content-Type": "application/json"}
     prompt = (
-        "You are an AI assistant helping the user answer a question using only the provided web data and If no data found answer the question with your intelligence.\n"
-        "=== Scraped Web Content Start ===\n"
-        f"{scraped_text}\n"
-        "=== Scraped Web Content End ===\n\n"
+        "You are an AI assistant. Use only the data provided below.\n\n"
+        "=== Source URLs ===\n"
+        + "\n".join(f"- {u}" for u in get_links_from_serpapi(user_question, SERPAPI_KEY)) +
+        "\n\n=== Scraped Content ===\n"
+        f"{scraped_text}\n\n"
         f"User's question: {user_question}\n"
-        "- Only answer using the content above.\n"
-        "- Be short, clear, and precise.\n"
-        "- Also don't give references to the scrapped text given above\n"
-        "- If no data found answer the question with your intelligence.\n"
-        " If the user asked for links, answer with those URLs (as clickable Markdown links).\n"
-
+        "- If the user asked for links, answer with those URLs (as Markdown links).\n"
+        "- Otherwise, answer using only the scraped content.\n"
+        "- Be concise and precise.\n"
     )
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
     try:
         resp = requests.post(url, headers=headers, data=json.dumps(payload))
-        if resp.status_code == 200:
-            data = resp.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        else:
-            return f"Error from Gemini: {resp.status_code}"
+        resp.raise_for_status()
+        data = resp.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception as e:
         return f"Error querying Gemini: {e}"
 
-# === Flask Route ===
+# === API Route ===
 @app.route('/api/realtime', methods=['POST'])
 def handle_query():
-    data = request.get_json()
-    question = data.get("question", "")
-
+    data = request.get_json() or {}
+    question = data.get("question", "").strip()
     if not question:
-        return jsonify({"error": "Missing 'question' in request."}), 400
+        return jsonify(error="Missing 'question'"), 400
 
     links = get_links_from_serpapi(question, SERPAPI_KEY)
     if not links:
-        return jsonify({"answer": "❌ No search results found."})
+        return jsonify(answer="❌ No search results found.")
 
     scraped = scrape_links(links)
     if not scraped.strip():
-        return jsonify({"answer": "❌ No content could be extracted from links."})
+        return jsonify(answer="❌ No content could be extracted from links.")
 
-    response = query_gemini(question, scraped, GEMINI_API_KEY)
-    return jsonify({"answer": response})
+    answer = query_gemini(question, scraped, GEMINI_API_KEY)
+    return jsonify(answer=answer)
 
-# === Main ===
+# === MAIN ===
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=int(os.getenv("PORT", 5000)))
+
+    
+    
+    
+#prompt = (
+ #       "You are an AI assistant helping the user answer a question using only the provided web data and If no data found answer the question with your intelligence.\n"
+ #       "=== Scraped Web Content Start ===\n"
+ #       f"{scraped_text}\n"
+ #       "=== Scraped Web Content End ===\n\n"
+ #       f"User's question: {user_question}\n"
+ #       "- Only answer using the content above.\n"
+ #       "- Be short, clear, and precise.\n"
+ #       "- Also don't give references to the scrapped text given above\n"
+ #       "- If no data found answer the question with your intelligence.\n"
+ #       " If the user asked for links, answer with those URLs (as clickable Markdown links).\n"
+#
+ #   )
