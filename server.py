@@ -21,7 +21,7 @@ if not GEMINI_API_KEY:
     raise RuntimeError("GEMINI_API_KEY environment variable not set")
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins=["https://anand-751.github.io"])
 
 # === Root route ===
 @app.route('/')
