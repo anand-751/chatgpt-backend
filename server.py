@@ -151,6 +151,6 @@ def handle_query():
     response = query_gemini(question, scraped, GEMINI_API_KEY)
     return jsonify({"answer": response})
 
-# === Run App ===
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    port = int(os.environ.get("PORT", 5000))  # Use PORT from environment if available
+    app.run(debug=True, host='0.0.0.0', port=port)
