@@ -4,3 +4,4 @@ python-dotenv==1.0.1
 requests==2.31.0
 beautifulsoup4==4.13.3
 gunicorn==21.2.0
+selenium==4.21.0   # ✅ Add this line
