@@ -12,7 +12,7 @@ from selenium.common.exceptions import TimeoutException, WebDriverException
 # === CONFIG ===
 load_dotenv()
 
-SERPAPI_KEY    = os.getenv("SERPAPI_KEY")
+SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not SERPAPI_KEY:
@@ -23,6 +23,10 @@ if not GEMINI_API_KEY:
 app = Flask(__name__)
 CORS(app)
 
+# === Root route ===
+@app.route('/')
+def home():
+    return "✅ Flask backend is working! Use POST /api/realtime"
 
 # === Helper Functions ===
 def is_valid_text(text):
@@ -75,16 +79,14 @@ def scrape_links(links, load_timeout=5):
             for el in elems:
                 tag_name = el.tag_name.lower()
                 text = el.text.strip()
-
                 if tag_name == "a":
                     href = el.get_attribute("href")
                     if text and href:
-                        extracted += f"[{text}]({href})\n"  # Markdown-style link
+                        extracted += f"[{text}]({href})\n"
                 elif is_valid_text(text):
                     extracted += text + "\n"
         except Exception as e:
             print(f"[ERROR] Failed while extracting elements: {e}")
-
 
         try:
             tables = driver.find_elements("tag name", "table")
@@ -116,7 +118,6 @@ def query_gemini(user_question, scraped_text, api_key):
         "- Also don't give references to the scrapped text given above\n"
         "- If no data found answer the question with your intelligence.\n"
         " If the user asked for links, answer with those URLs (as clickable Markdown links).\n"
-
     )
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
@@ -130,7 +131,7 @@ def query_gemini(user_question, scraped_text, api_key):
     except Exception as e:
         return f"Error querying Gemini: {e}"
 
-# === Flask Route ===
+# === Main API Route ===
 @app.route('/api/realtime', methods=['POST'])
 def handle_query():
     data = request.get_json()
@@ -150,6 +151,6 @@ def handle_query():
     response = query_gemini(question, scraped, GEMINI_API_KEY)
     return jsonify({"answer": response})
 
-# === Main ===
+# === Run App ===
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
