@@ -21,7 +21,15 @@ if not GEMINI_API_KEY:
     raise RuntimeError("GEMINI_API_KEY environment variable not set")
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "https://anand-751.github.io"}}, supports_credentials=True)
+# Allow ANY origin for testing, or lock down to your exact GitHub Pages URL:
+CORS(
+    app,
+    resources={ r"/api/*": { "origins": ["https://anand-751.github.io", 
+                                         "https://anand-751.github.io/Ai-ChatBot" ] } },
+    methods=["GET","POST","OPTIONS"],
+    allow_headers=["Content-Type"],
+    supports_credentials=False
+)
 
 # === Root route ===
 @app.route('/')
